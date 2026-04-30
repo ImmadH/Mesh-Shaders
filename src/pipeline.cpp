@@ -115,12 +115,26 @@ void VulkanPipeline::createGraphicsPipeline(const VulkanDevice& device,
   depthStencil.depthBoundsTestEnable = VK_FALSE;
   depthStencil.stencilTestEnable     = VK_FALSE;
 
+  VkDescriptorSetLayoutBinding binding{};
+  binding.binding         = 0;
+  binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  binding.descriptorCount = 1;
+  binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
+
+  VkDescriptorSetLayoutCreateInfo dslInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+  dslInfo.bindingCount = 1;
+  dslInfo.pBindings    = &binding;
+  if (vkCreateDescriptorSetLayout(device.getDevice(), &dslInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
+    throw std::runtime_error("failed to create descriptor set layout!");
+
   VkPushConstantRange pcRange{};
   pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
   pcRange.offset     = 0;
   pcRange.size       = sizeof(glm::mat4);
 
   VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+  pl.setLayoutCount         = 1;
+  pl.pSetLayouts            = &descriptorSetLayout;
   pl.pushConstantRangeCount = 1;
   pl.pPushConstantRanges    = &pcRange;
   if (vkCreatePipelineLayout(device.getDevice(), &pl, nullptr, &pipelineLayout) != VK_SUCCESS)
@@ -154,15 +168,17 @@ void VulkanPipeline::createGraphicsPipeline(const VulkanDevice& device,
 
 void VulkanPipeline::destroy(const VulkanDevice& device)
 {
-  if (graphicsPipeline) 
-  {
+  if (graphicsPipeline) {
     vkDestroyPipeline(device.getDevice(), graphicsPipeline, nullptr);
     graphicsPipeline = VK_NULL_HANDLE;
   }
-  if (pipelineLayout) 
-  {
+  if (pipelineLayout) {
     vkDestroyPipelineLayout(device.getDevice(), pipelineLayout, nullptr);
     pipelineLayout = VK_NULL_HANDLE;
+  }
+  if (descriptorSetLayout) {
+    vkDestroyDescriptorSetLayout(device.getDevice(), descriptorSetLayout, nullptr);
+    descriptorSetLayout = VK_NULL_HANDLE;
   }
   std::cerr << "Graphics Pipeline Destroyed\n";
 }

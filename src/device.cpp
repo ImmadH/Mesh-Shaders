@@ -159,6 +159,7 @@ void VulkanDevice::create(VulkanInstance& instance, VkSurfaceKHR surface)
   }
   
   VkPhysicalDeviceFeatures features{};
+  features.fillModeNonSolid = VK_TRUE;
 
   VkDeviceCreateInfo deviceCreateInfo{};
   deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

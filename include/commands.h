@@ -19,8 +19,11 @@ public:
               const VulkanRenderPass& renderPass,
               const VulkanPipeline& pipeline,
               VkFramebuffer framebuffer,
+              const MeshRegistry& registry,
               const VulkanMesh& mesh,
-              glm::mat4 mvp);
+              VkDescriptorSet descriptorSet,
+              uint32_t instanceCount,
+              glm::mat4 vp);
 
   void destroy(const VulkanDevice& device);
 

@@ -7,7 +7,6 @@
 static constexpr const char* MESH_PATH    = "models/bunny/scene.gltf";
 static constexpr VkFormat    DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 
-// Rotate -90° around X to bring Z-up models upright. Adjust if still sideways.
 static const glm::mat4 MODEL_MATRIX = glm::rotate(glm::mat4(1.0f),
                                                    glm::radians(-90.0f),
                                                    glm::vec3(1, 0, 0));
@@ -24,7 +23,7 @@ void VulkanApp::initWindow()
 {
   glfwInit();
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-  window = glfwCreateWindow(WIDTH, HEIGHT, "VKRenderer", nullptr, nullptr);
+  window = glfwCreateWindow(WIDTH, HEIGHT, "Meshlet Fun", nullptr, nullptr);
   glfwSetWindowUserPointer(window, this);
   glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
   glfwSetCursorPosCallback(window, cursorPosCallback);
@@ -45,7 +44,7 @@ void VulkanApp::mouseButtonCallback(GLFWwindow* window, int button, int action, 
   if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS && !app->mouseLocked) {
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     app->mouseLocked = true;
-    app->firstMouse  = true; // reset so we don't get a jump
+    app->firstMouse  = true; 
   }
 }
 
@@ -91,15 +90,54 @@ void VulkanApp::initVulkan()
   createDepthResources();
   createFrameBuffers();
 
-  mesh.create(allocator, MESH_PATH);
+  registry.init(allocator);
+  instanceBuffer.init(allocator);
+  mesh.create(registry, MESH_PATH);
 
   Camera::init({0.0f, 0.05f, 0.5f}, -90.0f, -5.0f);
+
+  createDescriptors();
 
   commands.createCommandPool(device);
   commands.allocateCommandBuffers(device, (uint32_t)swapChainFramebuffers.size());
   sync.createSyncObjects(device);
 
   lastFrameTime = glfwGetTime();
+}
+
+void VulkanApp::createDescriptors()
+{
+  VkDescriptorPoolSize poolSize{};
+  poolSize.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  poolSize.descriptorCount = 1;
+
+  VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+  poolInfo.maxSets       = 1;
+  poolInfo.poolSizeCount = 1;
+  poolInfo.pPoolSizes    = &poolSize;
+  if (vkCreateDescriptorPool(device.getDevice(), &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
+    throw std::runtime_error("failed to create descriptor pool!");
+
+  VkDescriptorSetLayout layout = pipeline.getDescriptorSetLayout();
+  VkDescriptorSetAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+  allocInfo.descriptorPool     = descriptorPool;
+  allocInfo.descriptorSetCount = 1;
+  allocInfo.pSetLayouts        = &layout;
+  if (vkAllocateDescriptorSets(device.getDevice(), &allocInfo, &descriptorSet) != VK_SUCCESS)
+    throw std::runtime_error("failed to allocate descriptor set!");
+
+  VkDescriptorBufferInfo bufInfo{};
+  bufInfo.buffer = instanceBuffer.getBuffer();
+  bufInfo.offset = 0;
+  bufInfo.range  = VK_WHOLE_SIZE;
+
+  VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+  write.dstSet          = descriptorSet;
+  write.dstBinding      = 0;
+  write.descriptorCount = 1;
+  write.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  write.pBufferInfo     = &bufInfo;
+  vkUpdateDescriptorSets(device.getDevice(), 1, &write, 0, nullptr);
 }
 
 void VulkanApp::createDepthResources()
@@ -253,11 +291,29 @@ void VulkanApp::drawFrame()
     throw std::runtime_error("failed to acquire swap chain image!");
   }
 
-  auto ext    = swapchain.getExtent();
+  auto ext     = swapchain.getExtent();
   float aspect = (float)ext.width / (float)ext.height;
+
+  instanceBuffer.reset();
+
+  glm::vec4 planes[6];
+  getFrustumPlanes(Camera::getMVP(aspect), planes);
+
+  float spacing = 0.3f;
+  for (int i = 0; i < 100; i++)
+    for (int j = 0; j < 100; j++) {
+      glm::mat4 t     = glm::translate(glm::mat4(1.0f), glm::vec3(i * spacing, 0.0f, j * spacing));
+      glm::mat4 model = t * MODEL_MATRIX;
+      glm::vec3 worldCenter = glm::vec3(model * glm::vec4(mesh.getCentroid(), 1.0f));
+      if (isVisible(planes, worldCenter, mesh.getRadius()))
+        instanceBuffer.push(model);
+    }
+  std::cout << "visible: " << instanceBuffer.getCount() << " / 10000\n";
+
   commands.record(imageIndex, swapchain, renderPass, pipeline,
-                  swapChainFramebuffers[imageIndex], mesh,
-                  Camera::getMVP(aspect, MODEL_MATRIX));
+                  swapChainFramebuffers[imageIndex], registry, mesh,
+                  descriptorSet, instanceBuffer.getCount(),
+                  Camera::getMVP(aspect));
 
   VkSemaphore          waitSems[]   = { sync.imageAvailable(currentFrame) };
   VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
@@ -305,7 +361,12 @@ void VulkanApp::cleanup()
   destroyDepthResources();
   sync.destroy(device);
   commands.destroy(device);
-  mesh.destroy(allocator);
+  if (descriptorPool) {
+    vkDestroyDescriptorPool(device.getDevice(), descriptorPool, nullptr);
+    descriptorPool = VK_NULL_HANDLE;
+  }
+  instanceBuffer.destroy(allocator);
+  registry.destroy(allocator);
   vmaDestroyAllocator(allocator);
   pipeline.destroy(device);
   renderPass.destroy(device);

@@ -24,14 +24,15 @@ public:
                               const char* fragSpvPath = "shaders/frag.spv");
 
   void destroy(const VulkanDevice& device);
-  VkPipeline  getPipeline() const {return graphicsPipeline;}
-  VkPipelineLayout getLayout() const {return pipelineLayout;}
+  VkPipeline            getPipeline()           const { return graphicsPipeline; }
+  VkPipelineLayout      getLayout()             const { return pipelineLayout; }
+  VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
+
 private:
-
-
   VkShaderModule createShaderModule(const VulkanDevice& device, const std::vector<char>& code) const;
 
-  VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-  VkPipeline       graphicsPipeline = VK_NULL_HANDLE;
+  VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+  VkPipelineLayout      pipelineLayout      = VK_NULL_HANDLE;
+  VkPipeline            graphicsPipeline    = VK_NULL_HANDLE;
 
 };

@@ -36,8 +36,11 @@ void VulkanCommands::record(uint32_t i,
                              const VulkanRenderPass& renderPass,
                              const VulkanPipeline& pipeline,
                              VkFramebuffer framebuffer,
+                             const MeshRegistry& registry,
                              const VulkanMesh& mesh,
-                             glm::mat4 mvp)
+                             VkDescriptorSet descriptorSet,
+                             uint32_t instanceCount,
+                             glm::mat4 vp)
 {
   vkResetCommandBuffer(commandBuffers[i], 0);
 
@@ -64,13 +67,16 @@ void VulkanCommands::record(uint32_t i,
 
   vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipeline());
 
-  vkCmdPushConstants(commandBuffers[i], pipeline.getLayout(),
-                     VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &mvp);
+  vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          pipeline.getLayout(), 0, 1, &descriptorSet, 0, nullptr);
 
-  VkBuffer     vbs[]     = { mesh.getVertexBuffer() };
+  vkCmdPushConstants(commandBuffers[i], pipeline.getLayout(),
+                     VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &vp);
+
+  VkBuffer     vbs[]     = { registry.getVertexBuffer() };
   VkDeviceSize offsets[] = { 0 };
   vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, vbs, offsets);
-  vkCmdBindIndexBuffer(commandBuffers[i], mesh.getIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+  vkCmdBindIndexBuffer(commandBuffers[i], registry.getIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
 
   VkViewport viewport{};
   viewport.x        = 0.f;
@@ -86,7 +92,8 @@ void VulkanCommands::record(uint32_t i,
   scissor.extent = swapchain.getExtent();
   vkCmdSetScissor(commandBuffers[i], 0, 1, &scissor);
 
-  vkCmdDrawIndexed(commandBuffers[i], mesh.getIndexCount(), 1, 0, 0, 0);
+  vkCmdDrawIndexed(commandBuffers[i], mesh.getIndexCount(), instanceCount,
+                   mesh.getFirstIndex(), (int32_t)mesh.getFirstVertex(), 0);
 
   vkCmdEndRenderPass(commandBuffers[i]);
 

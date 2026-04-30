@@ -9,5 +9,8 @@ namespace Camera
                    float yaw = -90.0f, float pitch = 0.0f);
     void      processKeyboard(GLFWwindow* window, float dt);
     void      processMouse(float dx, float dy);
-    glm::mat4 getMVP(float aspect, glm::mat4 model = glm::mat4(1.0f));
+    glm::mat4 getMVP(float aspect);
 }
+
+void getFrustumPlanes(const glm::mat4& vp, glm::vec4 planes[6]);
+bool isVisible(glm::vec4 planes[6], glm::vec3 center, float radius);

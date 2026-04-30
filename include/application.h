@@ -32,6 +32,7 @@ private:
   void initVulkan();
   void mainLoop();
   void cleanup();
+  void createDescriptors();
   void createDepthResources();
   void destroyDepthResources();
 
@@ -61,7 +62,12 @@ private:
   VulkanSwapchain  swapchain;
   VulkanRenderPass renderPass;
   VulkanPipeline   pipeline;
+  MeshRegistry     registry;
+  InstanceBuffer   instanceBuffer;
   VulkanMesh       mesh;
   VulkanCommands   commands;
   VulkanSync       sync;
+
+  VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+  VkDescriptorSet  descriptorSet  = VK_NULL_HANDLE;
 };
