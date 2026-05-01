@@ -81,8 +81,24 @@ void VulkanApp::initVulkan()
   createFrameBuffers();
 
   registry.init(allocator);
-  instanceBuffer.init(allocator);
+  allInstances.init(allocator);
+  visibleInstances.init(allocator);
+  indirectDrawBuffer.init(allocator);
   mesh.create(registry, MESH_PATH);
+
+  // Pre-build all 10k model matrices once — GPU culling reads from this every frame
+  constexpr float spacing = 0.3f;
+  for (int i = 0; i < 100; i++)
+    for (int j = 0; j < 100; j++) {
+      glm::mat4 t = glm::translate(glm::mat4(1.0f), glm::vec3(i * spacing, 0.0f, j * spacing));
+      allInstances.push(t * MODEL_MATRIX);
+    }
+
+  // Bake static draw params into indirect buffer once; instanceCount reset each frame
+  indirectDrawBuffer.write(mesh.getIndexCount(), 0,
+                           mesh.getFirstIndex(), (int32_t)mesh.getFirstVertex());
+
+  pipeline.createComputePipeline(device);
 
   Camera::init({0.0f, 0.05f, 0.5f}, -90.0f, -5.0f);
 
@@ -106,37 +122,74 @@ void VulkanApp::initVulkan()
 
 void VulkanApp::createDescriptors()
 {
-  VkDescriptorPoolSize poolSize{};
-  poolSize.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  poolSize.descriptorCount = 1;
+  // --- graphics descriptor set: visibleInstances at binding 0 ---
+  VkDescriptorPoolSize gfxPoolSize{};
+  gfxPoolSize.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  gfxPoolSize.descriptorCount = 1;
 
-  VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-  poolInfo.maxSets       = 1;
-  poolInfo.poolSizeCount = 1;
-  poolInfo.pPoolSizes    = &poolSize;
-  if (vkCreateDescriptorPool(device.getDevice(), &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
-    throw std::runtime_error("failed to create descriptor pool!");
+  VkDescriptorPoolCreateInfo gfxPoolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+  gfxPoolInfo.maxSets       = 1;
+  gfxPoolInfo.poolSizeCount = 1;
+  gfxPoolInfo.pPoolSizes    = &gfxPoolSize;
+  if (vkCreateDescriptorPool(device.getDevice(), &gfxPoolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
+    throw std::runtime_error("failed to create graphics descriptor pool!");
 
-  VkDescriptorSetLayout layout = pipeline.getDescriptorSetLayout();
-  VkDescriptorSetAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-  allocInfo.descriptorPool     = descriptorPool;
-  allocInfo.descriptorSetCount = 1;
-  allocInfo.pSetLayouts        = &layout;
-  if (vkAllocateDescriptorSets(device.getDevice(), &allocInfo, &descriptorSet) != VK_SUCCESS)
-    throw std::runtime_error("failed to allocate descriptor set!");
+  VkDescriptorSetLayout gfxLayout = pipeline.getDescriptorSetLayout();
+  VkDescriptorSetAllocateInfo gfxAlloc{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+  gfxAlloc.descriptorPool     = descriptorPool;
+  gfxAlloc.descriptorSetCount = 1;
+  gfxAlloc.pSetLayouts        = &gfxLayout;
+  if (vkAllocateDescriptorSets(device.getDevice(), &gfxAlloc, &descriptorSet) != VK_SUCCESS)
+    throw std::runtime_error("failed to allocate graphics descriptor set!");
 
-  VkDescriptorBufferInfo bufInfo{};
-  bufInfo.buffer = instanceBuffer.getBuffer();
-  bufInfo.offset = 0;
-  bufInfo.range  = VK_WHOLE_SIZE;
+  VkDescriptorBufferInfo visibleBufInfo{};
+  visibleBufInfo.buffer = visibleInstances.getBuffer();
+  visibleBufInfo.offset = 0;
+  visibleBufInfo.range  = VK_WHOLE_SIZE;
 
-  VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-  write.dstSet          = descriptorSet;
-  write.dstBinding      = 0;
-  write.descriptorCount = 1;
-  write.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  write.pBufferInfo     = &bufInfo;
-  vkUpdateDescriptorSets(device.getDevice(), 1, &write, 0, nullptr);
+  VkWriteDescriptorSet gfxWrite{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+  gfxWrite.dstSet          = descriptorSet;
+  gfxWrite.dstBinding      = 0;
+  gfxWrite.descriptorCount = 1;
+  gfxWrite.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  gfxWrite.pBufferInfo     = &visibleBufInfo;
+  vkUpdateDescriptorSets(device.getDevice(), 1, &gfxWrite, 0, nullptr);
+
+  // --- compute descriptor set: allInstances(0), visibleInstances(1), indirectCmd(2) ---
+  VkDescriptorPoolSize compPoolSize{};
+  compPoolSize.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  compPoolSize.descriptorCount = 3;
+
+  VkDescriptorPoolCreateInfo compPoolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+  compPoolInfo.maxSets       = 1;
+  compPoolInfo.poolSizeCount = 1;
+  compPoolInfo.pPoolSizes    = &compPoolSize;
+  if (vkCreateDescriptorPool(device.getDevice(), &compPoolInfo, nullptr, &computeDescriptorPool) != VK_SUCCESS)
+    throw std::runtime_error("failed to create compute descriptor pool!");
+
+  VkDescriptorSetLayout compLayout = pipeline.getComputeDescriptorSetLayout();
+  VkDescriptorSetAllocateInfo compAlloc{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+  compAlloc.descriptorPool     = computeDescriptorPool;
+  compAlloc.descriptorSetCount = 1;
+  compAlloc.pSetLayouts        = &compLayout;
+  if (vkAllocateDescriptorSets(device.getDevice(), &compAlloc, &computeDescriptorSet) != VK_SUCCESS)
+    throw std::runtime_error("failed to allocate compute descriptor set!");
+
+  VkDescriptorBufferInfo bufs[3] = {};
+  bufs[0].buffer = allInstances.getBuffer();     bufs[0].range = VK_WHOLE_SIZE;
+  bufs[1].buffer = visibleInstances.getBuffer(); bufs[1].range = VK_WHOLE_SIZE;
+  bufs[2].buffer = indirectDrawBuffer.getBuffer(); bufs[2].range = VK_WHOLE_SIZE;
+
+  VkWriteDescriptorSet compWrites[3] = {};
+  for (int i = 0; i < 3; i++) {
+    compWrites[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    compWrites[i].dstSet          = computeDescriptorSet;
+    compWrites[i].dstBinding      = (uint32_t)i;
+    compWrites[i].descriptorCount = 1;
+    compWrites[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    compWrites[i].pBufferInfo     = &bufs[i];
+  }
+  vkUpdateDescriptorSets(device.getDevice(), 3, compWrites, 0, nullptr);
 }
 
 void VulkanApp::createDepthResources()
@@ -293,29 +346,32 @@ void VulkanApp::drawFrame()
   auto ext     = swapchain.getExtent();
   float aspect = (float)ext.width / (float)ext.height;
 
-  instanceBuffer.reset();
+  indirectDrawBuffer.resetInstanceCount();
 
   glm::vec4 planes[6];
   getFrustumPlanes(Camera::getMVP(aspect), planes);
 
-  float spacing = 0.3f;
-  for (int i = 0; i < 100; i++)
-    for (int j = 0; j < 100; j++) {
-      glm::mat4 t     = glm::translate(glm::mat4(1.0f), glm::vec3(i * spacing, 0.0f, j * spacing));
-      glm::mat4 model = t * MODEL_MATRIX;
-      glm::vec3 worldCenter = glm::vec3(model * glm::vec4(mesh.getCentroid(), 1.0f));
-      if (isVisible(planes, worldCenter, mesh.getRadius()))
-        instanceBuffer.push(model);
-    }
+  CullDispatchInfo cull{};
+  cull.pipeline        = pipeline.getComputePipeline();
+  cull.layout          = pipeline.getComputeLayout();
+  cull.descriptorSet   = computeDescriptorSet;
+  cull.outputBuffer    = visibleInstances.getBuffer();
+  memcpy(cull.pc.planes, planes, sizeof(planes));
+  cull.pc.centroidAndRadius = glm::vec4(mesh.getCentroid(), mesh.getRadius());
+  cull.pc.totalCount        = 10000;
+
+  imgui.profilerUpdate(dt);
   imgui.beginFrame();
   ImGui::Begin("Debug");
-  ImGui::Text("Visible: %u / 10000", instanceBuffer.getCount());
+  ImGui::Text("Instances: 10000 (GPU culled)");
+  ImGui::Checkbox("Profile Window", &showProfiler);
   ImGui::End();
+  if (showProfiler) imgui.drawProfileWindow(showProfiler);
   imgui.endFrame();
 
   commands.record(imageIndex, swapchain, renderPass, pipeline,
-                  swapChainFramebuffers[imageIndex], registry, mesh,
-                  descriptorSet, instanceBuffer.getCount(),
+                  swapChainFramebuffers[imageIndex], registry,
+                  descriptorSet, indirectDrawBuffer.getBuffer(), cull,
                   Camera::getMVP(aspect),
                   [this](VkCommandBuffer cmd) { imgui.render(cmd); });
 
@@ -366,11 +422,17 @@ void VulkanApp::cleanup()
   destroyDepthResources();
   sync.destroy(device);
   commands.destroy(device);
+  if (computeDescriptorPool) {
+    vkDestroyDescriptorPool(device.getDevice(), computeDescriptorPool, nullptr);
+    computeDescriptorPool = VK_NULL_HANDLE;
+  }
   if (descriptorPool) {
     vkDestroyDescriptorPool(device.getDevice(), descriptorPool, nullptr);
     descriptorPool = VK_NULL_HANDLE;
   }
-  instanceBuffer.destroy(allocator);
+  allInstances.destroy(allocator);
+  visibleInstances.destroy(allocator);
+  indirectDrawBuffer.destroy(allocator);
   registry.destroy(allocator);
   vmaDestroyAllocator(allocator);
   pipeline.destroy(device);

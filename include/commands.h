@@ -9,6 +9,14 @@
 #include "pipeline.h"
 #include "mesh.h"
 
+struct CullDispatchInfo {
+    VkPipeline         pipeline;
+    VkPipelineLayout   layout;
+    VkDescriptorSet    descriptorSet;
+    VkBuffer           outputBuffer;
+    CullPushConstants  pc;
+};
+
 class VulkanCommands
 {
 public:
@@ -21,9 +29,9 @@ public:
               const VulkanPipeline& pipeline,
               VkFramebuffer framebuffer,
               const MeshRegistry& registry,
-              const VulkanMesh& mesh,
               VkDescriptorSet descriptorSet,
-              uint32_t instanceCount,
+              VkBuffer indirectBuffer,
+              const CullDispatchInfo& cull,
               glm::mat4 vp,
               std::function<void(VkCommandBuffer)> imguiDraw = nullptr);
 

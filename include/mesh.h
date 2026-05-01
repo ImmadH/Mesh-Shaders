@@ -31,6 +31,25 @@ private:
     uint32_t      nextIndex        = 0;
 };
 
+// IndirectBuffer
+
+class IndirectBuffer
+{
+public:
+    void init(VmaAllocator allocator);
+    void destroy(VmaAllocator allocator);
+    void write(uint32_t indexCount, uint32_t instanceCount,
+               uint32_t firstIndex, int32_t vertexOffset);
+    void resetInstanceCount();
+
+    VkBuffer getBuffer() const { return buffer; }
+
+private:
+    VkBuffer                      buffer     = VK_NULL_HANDLE;
+    VmaAllocation                 allocation = VK_NULL_HANDLE;
+    VkDrawIndexedIndirectCommand* mapped     = nullptr;
+};
+
 // InstanceBuffer
 
 class InstanceBuffer

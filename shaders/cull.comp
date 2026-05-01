@@ -1,0 +1,47 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) readonly buffer InputInstances {
+    mat4 instances[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer OutputInstances {
+    mat4 outInstances[];
+};
+
+layout(set = 0, binding = 2) buffer IndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+} cmd;
+
+layout(push_constant) uniform PC {
+    vec4 planes[6];
+    vec4 centroidAndRadius;
+    uint totalCount;
+} pc;
+
+bool isVisible(vec3 center, float radius) {
+    for (int i = 0; i < 6; i++) {
+        if (dot(pc.planes[i].xyz, center) + pc.planes[i].w < -radius)
+            return false;
+    }
+    return true;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.totalCount) return;
+
+    mat4  model  = instances[idx];
+    vec3  center = vec3(model * vec4(pc.centroidAndRadius.xyz, 1.0));
+    float radius = pc.centroidAndRadius.w;
+
+    if (isVisible(center, radius)) {
+        uint outIdx = atomicAdd(cmd.instanceCount, 1);
+        outInstances[outIdx] = model;
+    }
+}

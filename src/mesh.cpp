@@ -61,6 +61,47 @@ void MeshRegistry::destroy(VmaAllocator allocator)
     std::cerr << "MeshRegistry Destroyed\n";
 }
 
+// IndirectBuffer
+
+void IndirectBuffer::init(VmaAllocator allocator)
+{
+    VkBufferCreateInfo bufInfo{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    bufInfo.size  = sizeof(VkDrawIndexedIndirectCommand);
+    bufInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+    allocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+    VmaAllocationInfo info;
+    if (vmaCreateBuffer(allocator, &bufInfo, &allocInfo, &buffer, &allocation, &info) != VK_SUCCESS)
+        throw std::runtime_error("IndirectBuffer: vmaCreateBuffer failed");
+    mapped = static_cast<VkDrawIndexedIndirectCommand*>(info.pMappedData);
+}
+
+void IndirectBuffer::write(uint32_t indexCount, uint32_t instanceCount,
+                           uint32_t firstIndex, int32_t vertexOffset)
+{
+    mapped->indexCount    = indexCount;
+    mapped->instanceCount = instanceCount;
+    mapped->firstIndex    = firstIndex;
+    mapped->vertexOffset  = vertexOffset;
+    mapped->firstInstance = 0;
+}
+
+void IndirectBuffer::resetInstanceCount()
+{
+    mapped->instanceCount = 0;
+}
+
+void IndirectBuffer::destroy(VmaAllocator allocator)
+{
+    if (buffer) {
+        vmaDestroyBuffer(allocator, buffer, allocation);
+        buffer = VK_NULL_HANDLE;
+    }
+}
+
 // InstanceBuffer
 
 void InstanceBuffer::init(VmaAllocator allocator, uint32_t maxInstances)

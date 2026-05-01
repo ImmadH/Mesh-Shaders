@@ -165,6 +165,58 @@ void VulkanPipeline::createGraphicsPipeline(const VulkanDevice& device,
   std::cout << "Created Graphics Pipeline\n";
 }
 
+void VulkanPipeline::createComputePipeline(const VulkanDevice& device, const char* spvPath)
+{
+    VkDescriptorSetLayoutBinding bindings[3] = {};
+    for (int i = 0; i < 3; i++) {
+        bindings[i].binding         = (uint32_t)i;
+        bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+
+    VkDescriptorSetLayoutCreateInfo dslInfo{};
+    dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslInfo.bindingCount = 3;
+    dslInfo.pBindings    = bindings;
+    if (vkCreateDescriptorSetLayout(device.getDevice(), &dslInfo, nullptr, &computeDescriptorSetLayout) != VK_SUCCESS)
+        throw std::runtime_error("failed to create compute descriptor set layout!");
+
+    VkPushConstantRange pc{};
+    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pc.offset     = 0;
+    pc.size       = sizeof(CullPushConstants);
+
+    VkPipelineLayoutCreateInfo pl{};
+    pl.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pl.setLayoutCount         = 1;
+    pl.pSetLayouts            = &computeDescriptorSetLayout;
+    pl.pushConstantRangeCount = 1;
+    pl.pPushConstantRanges    = &pc;
+    if (vkCreatePipelineLayout(device.getDevice(), &pl, nullptr, &computePipelineLayout) != VK_SUCCESS)
+        throw std::runtime_error("failed to create compute pipeline layout!");
+
+    auto code = readFile(spvPath);
+    VkShaderModule module = createShaderModule(device, code);
+
+    VkPipelineShaderStageCreateInfo stage{};
+    stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = module;
+    stage.pName  = "main";
+
+    VkComputePipelineCreateInfo info{};
+    info.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    info.stage  = stage;
+    info.layout = computePipelineLayout;
+
+    if (vkCreateComputePipelines(device.getDevice(), VK_NULL_HANDLE, 1, &info, nullptr, &computePipeline) != VK_SUCCESS)
+        throw std::runtime_error("failed to create compute pipeline!");
+
+    vkDestroyShaderModule(device.getDevice(), module, nullptr);
+    std::cout << "Created Compute Pipeline\n";
+}
+
 void VulkanPipeline::destroy(const VulkanDevice& device)
 {
   if (graphicsPipeline) {
@@ -178,6 +230,18 @@ void VulkanPipeline::destroy(const VulkanDevice& device)
   if (descriptorSetLayout) {
     vkDestroyDescriptorSetLayout(device.getDevice(), descriptorSetLayout, nullptr);
     descriptorSetLayout = VK_NULL_HANDLE;
+  }
+  if (computePipeline) {
+    vkDestroyPipeline(device.getDevice(), computePipeline, nullptr);
+    computePipeline = VK_NULL_HANDLE;
+  }
+  if (computePipelineLayout) {
+    vkDestroyPipelineLayout(device.getDevice(), computePipelineLayout, nullptr);
+    computePipelineLayout = VK_NULL_HANDLE;
+  }
+  if (computeDescriptorSetLayout) {
+    vkDestroyDescriptorSetLayout(device.getDevice(), computeDescriptorSetLayout, nullptr);
+    computeDescriptorSetLayout = VK_NULL_HANDLE;
   }
   std::cerr << "Graphics Pipeline Destroyed\n";
 }
