@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vulkan/vulkan_core.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include "imgui.h"
 
 static constexpr const char* MESH_PATH    = "models/bunny/scene.gltf";
 static constexpr VkFormat    DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
@@ -27,7 +28,6 @@ void VulkanApp::initWindow()
   glfwSetWindowUserPointer(window, this);
   glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
   glfwSetCursorPosCallback(window, cursorPosCallback);
-  glfwSetMouseButtonCallback(window, mouseButtonCallback);
   if (glfwRawMouseMotionSupported())
     glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
 }
@@ -36,16 +36,6 @@ void VulkanApp::framebufferResizeCallback(GLFWwindow* window, int, int)
 {
   auto app = reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
   app->framebufferResized = true;
-}
-
-void VulkanApp::mouseButtonCallback(GLFWwindow* window, int button, int action, int)
-{
-  auto app = reinterpret_cast<VulkanApp*>(glfwGetWindowUserPointer(window));
-  if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS && !app->mouseLocked) {
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    app->mouseLocked = true;
-    app->firstMouse  = true; 
-  }
 }
 
 void VulkanApp::cursorPosCallback(GLFWwindow* window, double xpos, double ypos)
@@ -85,7 +75,7 @@ void VulkanApp::initVulkan()
   swapchain.createSwapChain(device, surface, window);
   swapchain.createImageViews(device);
   renderPass.createRenderPass(device, swapchain.getImageFormat(), DEPTH_FORMAT);
-  pipeline.createGraphicsPipeline(device, swapchain, renderPass);
+  pipeline.createGraphicsPipeline(device, renderPass);
 
   createDepthResources();
   createFrameBuffers();
@@ -100,7 +90,16 @@ void VulkanApp::initVulkan()
 
   commands.createCommandPool(device);
   commands.allocateCommandBuffers(device, (uint32_t)swapChainFramebuffers.size());
-  sync.createSyncObjects(device);
+  sync.createSyncObjects(device, (uint32_t)swapchain.getImageViews().size());
+
+  imgui.init(window,
+             instance.getInstance(),
+             device.getPhysicalDevice(),
+             device.getDevice(),
+             device.getQueueFamilyIndices().graphicsFamily.value(),
+             device.getGraphicsQueue(),
+             (uint32_t)swapchain.getImageViews().size(),
+             renderPass.getRenderPass());
 
   lastFrameTime = glfwGetTime();
 }
@@ -308,16 +307,21 @@ void VulkanApp::drawFrame()
       if (isVisible(planes, worldCenter, mesh.getRadius()))
         instanceBuffer.push(model);
     }
-  std::cout << "visible: " << instanceBuffer.getCount() << " / 10000\n";
+  imgui.beginFrame();
+  ImGui::Begin("Debug");
+  ImGui::Text("Visible: %u / 10000", instanceBuffer.getCount());
+  ImGui::End();
+  imgui.endFrame();
 
   commands.record(imageIndex, swapchain, renderPass, pipeline,
                   swapChainFramebuffers[imageIndex], registry, mesh,
                   descriptorSet, instanceBuffer.getCount(),
-                  Camera::getMVP(aspect));
+                  Camera::getMVP(aspect),
+                  [this](VkCommandBuffer cmd) { imgui.render(cmd); });
 
   VkSemaphore          waitSems[]   = { sync.imageAvailable(currentFrame) };
   VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-  VkSemaphore          signalSems[] = { sync.renderFinished(currentFrame) };
+  VkSemaphore          signalSems[] = { sync.renderFinished(imageIndex) };
   const auto& cbs = commands.getCommandBuffers();
 
   VkSubmitInfo submitInfo{};
@@ -357,6 +361,7 @@ void VulkanApp::drawFrame()
 void VulkanApp::cleanup()
 {
   std::cout << '\n';
+  imgui.shutdown();
   destroyFrameBuffers();
   destroyDepthResources();
   sync.destroy(device);

@@ -40,7 +40,8 @@ void VulkanCommands::record(uint32_t i,
                              const VulkanMesh& mesh,
                              VkDescriptorSet descriptorSet,
                              uint32_t instanceCount,
-                             glm::mat4 vp)
+                             glm::mat4 vp,
+                             std::function<void(VkCommandBuffer)> imguiDraw)
 {
   vkResetCommandBuffer(commandBuffers[i], 0);
 
@@ -94,6 +95,9 @@ void VulkanCommands::record(uint32_t i,
 
   vkCmdDrawIndexed(commandBuffers[i], mesh.getIndexCount(), instanceCount,
                    mesh.getFirstIndex(), (int32_t)mesh.getFirstVertex(), 0);
+
+  if (imguiDraw)
+    imguiDraw(commandBuffers[i]);
 
   vkCmdEndRenderPass(commandBuffers[i]);
 

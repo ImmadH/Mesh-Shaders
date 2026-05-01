@@ -1,5 +1,6 @@
 #include "instance.h"
 #include <iostream>
+#include <cstdio>
 #include <vulkan/vulkan_core.h>
 #include "GLFW/glfw3.h"
 #include <cstring>
@@ -15,7 +16,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
     void* pUserData)
 {
-    (void)messageSeverity; (void)messageType; (void)pUserData;
+    (void)messageType; (void)pUserData;
+    if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+        fprintf(stderr, "[Vulkan] %s\n", pCallbackData->pMessage);
     return VK_FALSE;
 }
 

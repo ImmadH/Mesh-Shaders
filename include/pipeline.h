@@ -18,7 +18,6 @@ class VulkanPipeline
 {
 public:
   void createGraphicsPipeline(const VulkanDevice& device,
-                              const VulkanSwapchain& swapchain,
                               const VulkanRenderPass& renderPass,
                               const char* vertSpvPath = "shaders/vert.spv",
                               const char* fragSpvPath = "shaders/frag.spv");

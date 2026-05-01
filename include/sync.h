@@ -6,7 +6,7 @@ const int MAX_FRAMES_IN_FLIGHT = 2;
 class VulkanSync
 {
 public:
-  void createSyncObjects(const VulkanDevice& device);
+  void createSyncObjects(const VulkanDevice& device, uint32_t imageCount);
 
   void destroy(const VulkanDevice& device);
   const std::vector<VkSemaphore>& getImageAvailableSemaphore() const { return imageAvailableSemaphore; }

@@ -13,6 +13,7 @@
 #include "GLFW/glfw3.h"
 #include <vulkan/vulkan_core.h>
 #include <vk_mem_alloc.h>
+#include "../src/imgui_manager.h"
 
 class VulkanApp
 {
@@ -25,7 +26,6 @@ public:
 
   static void framebufferResizeCallback(GLFWwindow* window, int, int);
   static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos);
-  static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 
 private:
   void initWindow();
@@ -67,6 +67,7 @@ private:
   VulkanMesh       mesh;
   VulkanCommands   commands;
   VulkanSync       sync;
+  ImGuiManager     imgui;
 
   VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
   VkDescriptorSet  descriptorSet  = VK_NULL_HANDLE;

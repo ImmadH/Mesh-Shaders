@@ -32,7 +32,6 @@ VkShaderModule VulkanPipeline::createShaderModule(const VulkanDevice& device, co
 
 
 void VulkanPipeline::createGraphicsPipeline(const VulkanDevice& device,
-                                            const VulkanSwapchain& swapchain,
                                             const VulkanRenderPass& renderPass,
                                             const char* vertSpvPath,
                                             const char* fragSpvPath)

@@ -1,6 +1,7 @@
 #pragma once
 #include <vulkan/vulkan_core.h>
 #include <vector>
+#include <functional>
 #include <glm/glm.hpp>
 #include "device.h"
 #include "swapchain.h"
@@ -23,7 +24,8 @@ public:
               const VulkanMesh& mesh,
               VkDescriptorSet descriptorSet,
               uint32_t instanceCount,
-              glm::mat4 vp);
+              glm::mat4 vp,
+              std::function<void(VkCommandBuffer)> imguiDraw = nullptr);
 
   void destroy(const VulkanDevice& device);
 
