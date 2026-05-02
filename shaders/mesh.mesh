@@ -1,0 +1,94 @@
+#version 450
+#extension GL_EXT_mesh_shader : require
+
+layout(local_size_x = 64) in;
+layout(triangles, max_vertices = 64, max_primitives = 126) out;
+
+struct MeshletDesc {
+    uint  vertexOffset;
+    uint  triangleOffset;
+    uint  vertexCount;
+    uint  triangleCount;
+    vec3  center;
+    float radius;
+    vec3  coneAxis;
+    float coneCutoff;
+    int   groupId;
+    int   parentGroupId;
+    uint  lodLevel;
+    uint  _pad;
+};
+
+const uint MAX_MESHLETS = 2048u;
+struct TaskPayload {
+    uint instanceIdx;
+    uint meshletIndices[MAX_MESHLETS];
+};
+taskPayloadSharedEXT TaskPayload payload;
+
+layout(set = 0, binding = 0) readonly buffer MeshletDescs  { MeshletDesc meshlets[]; };
+layout(set = 0, binding = 1) readonly buffer MeshletVerts  { uint meshletVertices[]; };
+layout(set = 0, binding = 2) readonly buffer MeshletTris   { uint meshletTriangles[]; };
+layout(set = 0, binding = 3) readonly buffer VertexData    { float vdata[]; };
+layout(set = 0, binding = 4) readonly buffer Instances     { mat4 instances[]; };
+
+layout(push_constant) uniform PC {
+    mat4  vp;
+    vec3  meshCenter;
+    float meshRadius;
+    vec3  cameraPos;
+    uint  meshletCount;
+    uint  renderMode;
+    float cotHalfFovH;
+    float lodThreshold;
+    uint  forceLod;
+} pc;
+
+layout(location = 0) out vec3 outNormal[];
+layout(location = 1) out vec3 outMeshletColor[];
+layout(location = 2) flat out uint outLodLevel[];
+layout(location = 3) perprimitiveEXT flat out uint outPrimitiveID[];
+
+// HSV-based hash — vivid colors, never dark or black
+vec3 meshletColor(uint id) {
+    float hue = fract(float(id * 2654435761u) / 4294967296.0);
+    vec3  k   = fract(vec3(1.0, 2.0/3.0, 1.0/3.0) + hue) * 6.0 - 3.0;
+    vec3  rgb = clamp(abs(k) - 1.0, 0.0, 1.0);
+    return 0.95 * mix(vec3(1.0), rgb, 0.85);
+}
+
+void main()
+{
+    uint meshletIdx  = payload.meshletIndices[gl_WorkGroupID.x];
+    uint instanceIdx = payload.instanceIdx;
+    MeshletDesc m    = meshlets[meshletIdx];
+    mat4 model       = instances[instanceIdx];
+    mat4 mvp         = pc.vp * model;
+
+    SetMeshOutputsEXT(m.vertexCount, m.triangleCount);
+
+    uint tid = gl_LocalInvocationID.x;
+
+    if (tid < m.vertexCount) {
+        uint gv     = meshletVertices[m.vertexOffset + tid];
+        uint base   = gv * 6u;
+        vec3 pos    = vec3(vdata[base],      vdata[base + 1u], vdata[base + 2u]);
+        vec3 normal = vec3(vdata[base + 3u], vdata[base + 4u], vdata[base + 5u]);
+
+        gl_MeshVerticesEXT[tid].gl_Position = mvp * vec4(pos, 1.0);
+        outNormal[tid]       = mat3(model) * normal;
+        outMeshletColor[tid] = meshletColor(meshletIdx);
+        outLodLevel[tid]     = m.lodLevel;
+    }
+
+    // stride loop: 64 threads, up to 126 triangles
+    for (uint t = tid; t < m.triangleCount; t += 64u) {
+        uint tri = m.triangleOffset + t * 3u;
+        gl_PrimitiveTriangleIndicesEXT[t] = uvec3(
+            meshletTriangles[tri],
+            meshletTriangles[tri + 1u],
+            meshletTriangles[tri + 2u]
+        );
+        outPrimitiveID[t] = meshletIdx * 126u + t;
+    }
+}

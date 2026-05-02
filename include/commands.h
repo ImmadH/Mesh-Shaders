@@ -9,14 +9,6 @@
 #include "pipeline.h"
 #include "mesh.h"
 
-struct CullDispatchInfo {
-    VkPipeline         pipeline;
-    VkPipelineLayout   layout;
-    VkDescriptorSet    descriptorSet;
-    VkBuffer           outputBuffer;
-    CullPushConstants  pc;
-};
-
 class VulkanCommands
 {
 public:
@@ -28,11 +20,9 @@ public:
               const VulkanRenderPass& renderPass,
               const VulkanPipeline& pipeline,
               VkFramebuffer framebuffer,
-              const MeshRegistry& registry,
               VkDescriptorSet descriptorSet,
-              VkBuffer indirectBuffer,
-              const CullDispatchInfo& cull,
-              glm::mat4 vp,
+              const MeshPushConstants& pc,
+              uint32_t instanceCount,
               std::function<void(VkCommandBuffer)> imguiDraw = nullptr);
 
   void destroy(const VulkanDevice& device);
@@ -43,4 +33,5 @@ public:
 private:
   VkCommandPool commandPool = VK_NULL_HANDLE;
   std::vector<VkCommandBuffer> commandBuffers;
+  PFN_vkCmdDrawMeshTasksEXT pfnDrawMeshTasks = nullptr;
 };

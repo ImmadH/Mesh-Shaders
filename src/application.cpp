@@ -1,6 +1,8 @@
 #include "application.h"
 #include <stdexcept>
 #include <iostream>
+#include <cmath>
+#include <vector>
 #include <vulkan/vulkan_core.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include "imgui.h"
@@ -82,23 +84,87 @@ void VulkanApp::initVulkan()
 
   registry.init(allocator);
   allInstances.init(allocator);
-  visibleInstances.init(allocator);
-  indirectDrawBuffer.init(allocator);
-  mesh.create(registry, MESH_PATH);
+  mesh.create(registry, allocator, MESH_PATH);
 
-  // Pre-build all 10k model matrices once — GPU culling reads from this every frame
-  constexpr float spacing = 0.3f;
-  for (int i = 0; i < 100; i++)
-    for (int j = 0; j < 100; j++) {
-      glm::mat4 t = glm::translate(glm::mat4(1.0f), glm::vec3(i * spacing, 0.0f, j * spacing));
-      allInstances.push(t * MODEL_MATRIX);
+  // Poisson disk placement with random full-3D rotation — sea of bunnies.
+  // Multiple starting seeds create natural clumping; minDist prevents clipping.
+  {
+    // LCG-based RNG (deterministic)
+    uint32_t rngState = 0xdeadbeef;
+    auto rngF = [&]() -> float {
+      rngState = rngState * 1664525u + 1013904223u;
+      return float(rngState >> 8) / float(1 << 24);
+    };
+    auto rngR = [&](float lo, float hi) { return lo + (hi - lo) * rngF(); };
+
+    // Bridson's Poisson disk sampling in 2D (XZ plane)
+    const float minDist  = 0.20f;           // tighter packing; slight overlap OK for rotated bunnies
+    const float cellSz   = minDist * 0.707f;
+    const int   side     = 180;             // 180 × cellSz ≈ 25 m
+    const float half     = side * cellSz * 0.5f;
+    const int   kCands   = 28;              // candidates per active point
+
+    std::vector<int>       grid(side * side, -1);
+    std::vector<glm::vec2> pts;
+    std::vector<int>       active;
+    pts.reserve(10000);
+    active.reserve(10000);
+
+    auto toCell = [&](float v) -> int { return (int)((v + half) / cellSz); };
+
+    auto tryAdd = [&](glm::vec2 p) -> bool {
+      if (std::abs(p.x) >= half || std::abs(p.y) >= half) return false;
+      int cx = toCell(p.x), cz = toCell(p.y);
+      for (int di = -2; di <= 2; di++) for (int dj = -2; dj <= 2; dj++) {
+        int nx = cx+di, nz = cz+dj;
+        if (nx<0||nx>=side||nz<0||nz>=side) continue;
+        int idx = grid[nz*side+nx];
+        if (idx < 0) continue;
+        glm::vec2 d = p - pts[idx];
+        if (d.x*d.x + d.y*d.y < minDist*minDist) return false;
+      }
+      grid[cz*side+cx] = (int)pts.size();
+      active.push_back((int)pts.size());
+      pts.push_back(p);
+      return true;
+    };
+
+    // Seed with 60 random cluster centres — more seeds = fewer large voids between clusters
+    for (int c = 0; c < 60; c++)
+      tryAdd({ rngR(-half*0.75f, half*0.75f), rngR(-half*0.75f, half*0.75f) });
+
+    while ((int)pts.size() < 10000 && !active.empty()) {
+      // Pick a random active point and try kCands candidates around it
+      int ai = (int)(rngF() * (float)active.size()) % (int)active.size();
+      glm::vec2 src = pts[active[ai]];
+      bool found = false;
+      for (int k = 0; k < kCands && !found; k++) {
+        float a = rngF() * 6.2832f;
+        float r = minDist * (1.0f + rngF());  // [minDist, 2*minDist]
+        found = tryAdd(src + r * glm::vec2(std::cos(a), std::sin(a)));
+      }
+      if (!found) {
+        // Swap-and-pop to keep erase O(1)
+        active[ai] = active.back();
+        active.pop_back();
+      }
     }
 
-  // Bake static draw params into indirect buffer once; instanceCount reset each frame
-  indirectDrawBuffer.write(mesh.getIndexCount(), 0,
-                           mesh.getFirstIndex(), (int32_t)mesh.getFirstVertex());
+    // Build instance matrices
+    for (auto& p : pts) {
+      // Tiny Y jitter so bunnies aren't all exactly coplanar
+      glm::vec3 pos = { p.x, rngR(-0.03f, 0.03f), p.y };
 
-  pipeline.createComputePipeline(device);
+      // Fully random 3D rotation: random axis + random angle
+      glm::vec3 axis = glm::normalize(glm::vec3(
+        rngR(-1.f, 1.f), rngR(-1.f, 1.f), rngR(-1.f, 1.f)));
+      float angle = rngR(0.f, 6.2832f);
+
+      glm::mat4 T = glm::translate(glm::mat4(1.f), pos);
+      glm::mat4 R = glm::rotate(glm::mat4(1.f), angle, axis);
+      allInstances.push(T * R * MODEL_MATRIX);
+    }
+  }
 
   Camera::init({0.0f, 0.05f, 0.5f}, -90.0f, -5.0f);
 
@@ -122,74 +188,44 @@ void VulkanApp::initVulkan()
 
 void VulkanApp::createDescriptors()
 {
-  // --- graphics descriptor set: visibleInstances at binding 0 ---
-  VkDescriptorPoolSize gfxPoolSize{};
-  gfxPoolSize.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  gfxPoolSize.descriptorCount = 1;
+  // 6 storage buffers: meshlet descs, meshlet verts, meshlet tris, vertex data, instances, lod groups
+  VkDescriptorPoolSize poolSize{};
+  poolSize.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  poolSize.descriptorCount = 6;
 
-  VkDescriptorPoolCreateInfo gfxPoolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-  gfxPoolInfo.maxSets       = 1;
-  gfxPoolInfo.poolSizeCount = 1;
-  gfxPoolInfo.pPoolSizes    = &gfxPoolSize;
-  if (vkCreateDescriptorPool(device.getDevice(), &gfxPoolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
-    throw std::runtime_error("failed to create graphics descriptor pool!");
+  VkDescriptorPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+  poolInfo.maxSets       = 1;
+  poolInfo.poolSizeCount = 1;
+  poolInfo.pPoolSizes    = &poolSize;
+  if (vkCreateDescriptorPool(device.getDevice(), &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
+    throw std::runtime_error("failed to create descriptor pool!");
 
-  VkDescriptorSetLayout gfxLayout = pipeline.getDescriptorSetLayout();
-  VkDescriptorSetAllocateInfo gfxAlloc{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-  gfxAlloc.descriptorPool     = descriptorPool;
-  gfxAlloc.descriptorSetCount = 1;
-  gfxAlloc.pSetLayouts        = &gfxLayout;
-  if (vkAllocateDescriptorSets(device.getDevice(), &gfxAlloc, &descriptorSet) != VK_SUCCESS)
-    throw std::runtime_error("failed to allocate graphics descriptor set!");
+  VkDescriptorSetLayout layout = pipeline.getDescriptorSetLayout();
+  VkDescriptorSetAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+  allocInfo.descriptorPool     = descriptorPool;
+  allocInfo.descriptorSetCount = 1;
+  allocInfo.pSetLayouts        = &layout;
+  if (vkAllocateDescriptorSets(device.getDevice(), &allocInfo, &descriptorSet) != VK_SUCCESS)
+    throw std::runtime_error("failed to allocate descriptor set!");
 
-  VkDescriptorBufferInfo visibleBufInfo{};
-  visibleBufInfo.buffer = visibleInstances.getBuffer();
-  visibleBufInfo.offset = 0;
-  visibleBufInfo.range  = VK_WHOLE_SIZE;
+  VkDescriptorBufferInfo bufs[6] = {};
+  bufs[0].buffer = mesh.getMeshletBuffer();         bufs[0].range = VK_WHOLE_SIZE;
+  bufs[1].buffer = mesh.getMeshletVertexBuffer();   bufs[1].range = VK_WHOLE_SIZE;
+  bufs[2].buffer = mesh.getMeshletTriangleBuffer(); bufs[2].range = VK_WHOLE_SIZE;
+  bufs[3].buffer = registry.getVertexBuffer();      bufs[3].range = VK_WHOLE_SIZE;
+  bufs[4].buffer = allInstances.getBuffer();        bufs[4].range = VK_WHOLE_SIZE;
+  bufs[5].buffer = mesh.getLodGroupBuffer();        bufs[5].range = VK_WHOLE_SIZE;
 
-  VkWriteDescriptorSet gfxWrite{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-  gfxWrite.dstSet          = descriptorSet;
-  gfxWrite.dstBinding      = 0;
-  gfxWrite.descriptorCount = 1;
-  gfxWrite.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  gfxWrite.pBufferInfo     = &visibleBufInfo;
-  vkUpdateDescriptorSets(device.getDevice(), 1, &gfxWrite, 0, nullptr);
-
-  // --- compute descriptor set: allInstances(0), visibleInstances(1), indirectCmd(2) ---
-  VkDescriptorPoolSize compPoolSize{};
-  compPoolSize.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  compPoolSize.descriptorCount = 3;
-
-  VkDescriptorPoolCreateInfo compPoolInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-  compPoolInfo.maxSets       = 1;
-  compPoolInfo.poolSizeCount = 1;
-  compPoolInfo.pPoolSizes    = &compPoolSize;
-  if (vkCreateDescriptorPool(device.getDevice(), &compPoolInfo, nullptr, &computeDescriptorPool) != VK_SUCCESS)
-    throw std::runtime_error("failed to create compute descriptor pool!");
-
-  VkDescriptorSetLayout compLayout = pipeline.getComputeDescriptorSetLayout();
-  VkDescriptorSetAllocateInfo compAlloc{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-  compAlloc.descriptorPool     = computeDescriptorPool;
-  compAlloc.descriptorSetCount = 1;
-  compAlloc.pSetLayouts        = &compLayout;
-  if (vkAllocateDescriptorSets(device.getDevice(), &compAlloc, &computeDescriptorSet) != VK_SUCCESS)
-    throw std::runtime_error("failed to allocate compute descriptor set!");
-
-  VkDescriptorBufferInfo bufs[3] = {};
-  bufs[0].buffer = allInstances.getBuffer();     bufs[0].range = VK_WHOLE_SIZE;
-  bufs[1].buffer = visibleInstances.getBuffer(); bufs[1].range = VK_WHOLE_SIZE;
-  bufs[2].buffer = indirectDrawBuffer.getBuffer(); bufs[2].range = VK_WHOLE_SIZE;
-
-  VkWriteDescriptorSet compWrites[3] = {};
-  for (int i = 0; i < 3; i++) {
-    compWrites[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    compWrites[i].dstSet          = computeDescriptorSet;
-    compWrites[i].dstBinding      = (uint32_t)i;
-    compWrites[i].descriptorCount = 1;
-    compWrites[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    compWrites[i].pBufferInfo     = &bufs[i];
+  VkWriteDescriptorSet writes[6] = {};
+  for (int i = 0; i < 6; i++) {
+    writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet          = descriptorSet;
+    writes[i].dstBinding      = (uint32_t)i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[i].pBufferInfo     = &bufs[i];
   }
-  vkUpdateDescriptorSets(device.getDevice(), 3, compWrites, 0, nullptr);
+  vkUpdateDescriptorSets(device.getDevice(), 6, writes, 0, nullptr);
 }
 
 void VulkanApp::createDepthResources()
@@ -346,33 +382,41 @@ void VulkanApp::drawFrame()
   auto ext     = swapchain.getExtent();
   float aspect = (float)ext.width / (float)ext.height;
 
-  indirectDrawBuffer.resetInstanceCount();
+  float halfFovRad = glm::radians(Camera::getFovY() * 0.5f);
 
-  glm::vec4 planes[6];
-  getFrustumPlanes(Camera::getMVP(aspect), planes);
-
-  CullDispatchInfo cull{};
-  cull.pipeline        = pipeline.getComputePipeline();
-  cull.layout          = pipeline.getComputeLayout();
-  cull.descriptorSet   = computeDescriptorSet;
-  cull.outputBuffer    = visibleInstances.getBuffer();
-  memcpy(cull.pc.planes, planes, sizeof(planes));
-  cull.pc.centroidAndRadius = glm::vec4(mesh.getCentroid(), mesh.getRadius());
-  cull.pc.totalCount        = 10000;
+  MeshPushConstants pc{};
+  pc.vp            = Camera::getMVP(aspect);
+  pc.meshCenter    = mesh.getCentroid();
+  pc.meshRadius    = mesh.getRadius();
+  pc.cameraPos     = Camera::getPosition();
+  pc.meshletCount  = mesh.getMeshletCount();
+  pc.renderMode    = (uint32_t)renderMode;
+  pc.cotHalfFovH   = (ext.height * 0.5f) / std::tan(halfFovRad);
+  pc.lodThreshold  = debug_settings.lod_error_threshold;
+  pc.forceLod      = debug_settings.force_lod;
 
   imgui.profilerUpdate(dt);
   imgui.beginFrame();
   ImGui::Begin("Debug");
-  ImGui::Text("Instances: 10000 (GPU culled)");
+  ImGui::Text("Instances: 10000 | Meshlets/mesh: %u", mesh.getMeshletCount());
+  static const char* renderModes[] = { "Solid", "Clusters", "LODs", "Triangles" };
+  ImGui::Combo("Render Mode", &renderMode, renderModes, 4);
+  ImGui::Separator();
+  ImGui::Text("LOD Settings");
+  ImGui::SliderFloat("Error Threshold (px)", &debug_settings.lod_error_threshold, 0.1f, 10.0f, "%.1f");
+  ImGui::SliderInt("Force LOD",
+                   reinterpret_cast<int*>(&debug_settings.force_lod),
+                   0, 8,
+                   debug_settings.force_lod == 0 ? "Auto" : "%d");
+  ImGui::Separator();
   ImGui::Checkbox("Profile Window", &showProfiler);
   ImGui::End();
   if (showProfiler) imgui.drawProfileWindow(showProfiler);
   imgui.endFrame();
 
   commands.record(imageIndex, swapchain, renderPass, pipeline,
-                  swapChainFramebuffers[imageIndex], registry,
-                  descriptorSet, indirectDrawBuffer.getBuffer(), cull,
-                  Camera::getMVP(aspect),
+                  swapChainFramebuffers[imageIndex],
+                  descriptorSet, pc, 10000,
                   [this](VkCommandBuffer cmd) { imgui.render(cmd); });
 
   VkSemaphore          waitSems[]   = { sync.imageAvailable(currentFrame) };
@@ -422,17 +466,12 @@ void VulkanApp::cleanup()
   destroyDepthResources();
   sync.destroy(device);
   commands.destroy(device);
-  if (computeDescriptorPool) {
-    vkDestroyDescriptorPool(device.getDevice(), computeDescriptorPool, nullptr);
-    computeDescriptorPool = VK_NULL_HANDLE;
-  }
   if (descriptorPool) {
     vkDestroyDescriptorPool(device.getDevice(), descriptorPool, nullptr);
     descriptorPool = VK_NULL_HANDLE;
   }
   allInstances.destroy(allocator);
-  visibleInstances.destroy(allocator);
-  indirectDrawBuffer.destroy(allocator);
+  mesh.destroy(allocator);
   registry.destroy(allocator);
   vmaDestroyAllocator(allocator);
   pipeline.destroy(device);

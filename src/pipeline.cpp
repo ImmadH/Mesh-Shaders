@@ -33,47 +33,62 @@ VkShaderModule VulkanPipeline::createShaderModule(const VulkanDevice& device, co
 
 void VulkanPipeline::createGraphicsPipeline(const VulkanDevice& device,
                                             const VulkanRenderPass& renderPass,
-                                            const char* vertSpvPath,
+                                            const char* taskSpvPath,
+                                            const char* meshSpvPath,
                                             const char* fragSpvPath)
 {
-  // shader modules
-  auto vertCode = readFile(vertSpvPath);
+  auto taskCode = readFile(taskSpvPath);
+  auto meshCode = readFile(meshSpvPath);
   auto fragCode = readFile(fragSpvPath);
 
-  VkShaderModule vertModule = createShaderModule(device, vertCode);
+  VkShaderModule taskModule = createShaderModule(device, taskCode);
+  VkShaderModule meshModule = createShaderModule(device, meshCode);
   VkShaderModule fragModule = createShaderModule(device, fragCode);
 
-  VkPipelineShaderStageCreateInfo vertStage{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
-  vertStage.stage  = VK_SHADER_STAGE_VERTEX_BIT;
-  vertStage.module = vertModule;
-  vertStage.pName  = "main";
+  VkPipelineShaderStageCreateInfo taskStage{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+  taskStage.stage  = VK_SHADER_STAGE_TASK_BIT_EXT;
+  taskStage.module = taskModule;
+  taskStage.pName  = "main";
+
+  VkPipelineShaderStageCreateInfo meshStage{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+  meshStage.stage  = VK_SHADER_STAGE_MESH_BIT_EXT;
+  meshStage.module = meshModule;
+  meshStage.pName  = "main";
 
   VkPipelineShaderStageCreateInfo fragStage{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
   fragStage.stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
   fragStage.module = fragModule;
   fragStage.pName  = "main";
 
-  VkPipelineShaderStageCreateInfo stages[] = { vertStage, fragStage };
+  VkPipelineShaderStageCreateInfo stages[] = { taskStage, meshStage, fragStage };
 
-  // fixed functions 
-  VkVertexInputBindingDescription bindingDesc{};
-  bindingDesc.binding   = 0;
-  bindingDesc.stride    = sizeof(Vertex);
-  bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+  // 6 storage buffer bindings: meshlet descs, meshlet verts, meshlet tris, vertex data, instances, lod groups
+  VkDescriptorSetLayoutBinding bindings[6] = {};
+  for (int i = 0; i < 6; i++) {
+      bindings[i].binding         = (uint32_t)i;
+      bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      bindings[i].descriptorCount = 1;
+      bindings[i].stageFlags      = VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT;
+  }
 
-  std::array<VkVertexInputAttributeDescription, 2> attrDescs{};
-  attrDescs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos)};
-  attrDescs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
+  VkDescriptorSetLayoutCreateInfo dslInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+  dslInfo.bindingCount = 6;
+  dslInfo.pBindings    = bindings;
+  if (vkCreateDescriptorSetLayout(device.getDevice(), &dslInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
+    throw std::runtime_error("failed to create descriptor set layout!");
 
-  VkPipelineVertexInputStateCreateInfo vertexInput{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-  vertexInput.vertexBindingDescriptionCount   = 1;
-  vertexInput.pVertexBindingDescriptions      = &bindingDesc;
-  vertexInput.vertexAttributeDescriptionCount = (uint32_t)attrDescs.size();
-  vertexInput.pVertexAttributeDescriptions    = attrDescs.data();
+  VkPushConstantRange pcRange{};
+  pcRange.stageFlags = VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  pcRange.offset     = 0;
+  pcRange.size       = sizeof(MeshPushConstants);
 
-  VkPipelineInputAssemblyStateCreateInfo inputAssemblerInfo{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
-  inputAssemblerInfo.topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-  inputAssemblerInfo.primitiveRestartEnable = VK_FALSE;
+  VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+  pl.setLayoutCount         = 1;
+  pl.pSetLayouts            = &descriptorSetLayout;
+  pl.pushConstantRangeCount = 1;
+  pl.pPushConstantRanges    = &pcRange;
+  if (vkCreatePipelineLayout(device.getDevice(), &pl, nullptr, &pipelineLayout) != VK_SUCCESS)
+    throw std::runtime_error("failed to create pipeline layout!");
 
   VkPipelineViewportStateCreateInfo vpState{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
   vpState.viewportCount = 1;
@@ -85,12 +100,12 @@ void VulkanPipeline::createGraphicsPipeline(const VulkanDevice& device,
   rasterizer.polygonMode             = VK_POLYGON_MODE_FILL;
   rasterizer.lineWidth               = 1.0f;
   rasterizer.cullMode                = VK_CULL_MODE_NONE;
-  rasterizer.frontFace               = VK_FRONT_FACE_CLOCKWISE; 
+  rasterizer.frontFace               = VK_FRONT_FACE_CLOCKWISE;
   rasterizer.depthBiasEnable         = VK_FALSE;
 
   VkPipelineMultisampleStateCreateInfo multiSampling{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
-  multiSampling.rasterizationSamples   = VK_SAMPLE_COUNT_1_BIT;
-  multiSampling.sampleShadingEnable    = VK_FALSE;
+  multiSampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  multiSampling.sampleShadingEnable  = VK_FALSE;
 
   VkPipelineColorBlendAttachmentState cbAtt{};
   cbAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -114,107 +129,30 @@ void VulkanPipeline::createGraphicsPipeline(const VulkanDevice& device,
   depthStencil.depthBoundsTestEnable = VK_FALSE;
   depthStencil.stencilTestEnable     = VK_FALSE;
 
-  VkDescriptorSetLayoutBinding binding{};
-  binding.binding         = 0;
-  binding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  binding.descriptorCount = 1;
-  binding.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
-
-  VkDescriptorSetLayoutCreateInfo dslInfo{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-  dslInfo.bindingCount = 1;
-  dslInfo.pBindings    = &binding;
-  if (vkCreateDescriptorSetLayout(device.getDevice(), &dslInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
-    throw std::runtime_error("failed to create descriptor set layout!");
-
-  VkPushConstantRange pcRange{};
-  pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-  pcRange.offset     = 0;
-  pcRange.size       = sizeof(glm::mat4);
-
-  VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-  pl.setLayoutCount         = 1;
-  pl.pSetLayouts            = &descriptorSetLayout;
-  pl.pushConstantRangeCount = 1;
-  pl.pPushConstantRanges    = &pcRange;
-  if (vkCreatePipelineLayout(device.getDevice(), &pl, nullptr, &pipelineLayout) != VK_SUCCESS)
-    throw std::runtime_error("failed to create pipeline layout!");
-
-  //  graphics pipeline
+  // mesh shader pipeline: no vertex input state, no input assembly state
   VkGraphicsPipelineCreateInfo pipelineCreateInfo{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
-  pipelineCreateInfo.stageCount = 2;
-  pipelineCreateInfo.pStages = stages;
-  pipelineCreateInfo.pVertexInputState  = &vertexInput;
-  pipelineCreateInfo.pInputAssemblyState = &inputAssemblerInfo;
-  pipelineCreateInfo.pViewportState = &vpState;
+  pipelineCreateInfo.stageCount          = 3;
+  pipelineCreateInfo.pStages             = stages;
+  pipelineCreateInfo.pVertexInputState   = nullptr;
+  pipelineCreateInfo.pInputAssemblyState = nullptr;
+  pipelineCreateInfo.pViewportState      = &vpState;
   pipelineCreateInfo.pRasterizationState = &rasterizer;
-  pipelineCreateInfo.pMultisampleState = &multiSampling;
-  pipelineCreateInfo.pColorBlendState = &cblend;
-  pipelineCreateInfo.pDynamicState      = &dyn;
-  pipelineCreateInfo.pDepthStencilState = &depthStencil;
-  pipelineCreateInfo.layout             = pipelineLayout;
-  pipelineCreateInfo.renderPass         = renderPass.getRenderPass();
-  pipelineCreateInfo.subpass            = 0;
+  pipelineCreateInfo.pMultisampleState   = &multiSampling;
+  pipelineCreateInfo.pColorBlendState    = &cblend;
+  pipelineCreateInfo.pDynamicState       = &dyn;
+  pipelineCreateInfo.pDepthStencilState  = &depthStencil;
+  pipelineCreateInfo.layout              = pipelineLayout;
+  pipelineCreateInfo.renderPass          = renderPass.getRenderPass();
+  pipelineCreateInfo.subpass             = 0;
 
   if (vkCreateGraphicsPipelines(device.getDevice(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &graphicsPipeline) != VK_SUCCESS)
     throw std::runtime_error("failed to create graphics pipeline!");
 
-  // shader modules go after pipeline creation
   vkDestroyShaderModule(device.getDevice(), fragModule, nullptr);
-  vkDestroyShaderModule(device.getDevice(), vertModule, nullptr);
+  vkDestroyShaderModule(device.getDevice(), meshModule, nullptr);
+  vkDestroyShaderModule(device.getDevice(), taskModule, nullptr);
 
-  std::cout << "Created Graphics Pipeline\n";
-}
-
-void VulkanPipeline::createComputePipeline(const VulkanDevice& device, const char* spvPath)
-{
-    VkDescriptorSetLayoutBinding bindings[3] = {};
-    for (int i = 0; i < 3; i++) {
-        bindings[i].binding         = (uint32_t)i;
-        bindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[i].descriptorCount = 1;
-        bindings[i].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
-    }
-
-    VkDescriptorSetLayoutCreateInfo dslInfo{};
-    dslInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dslInfo.bindingCount = 3;
-    dslInfo.pBindings    = bindings;
-    if (vkCreateDescriptorSetLayout(device.getDevice(), &dslInfo, nullptr, &computeDescriptorSetLayout) != VK_SUCCESS)
-        throw std::runtime_error("failed to create compute descriptor set layout!");
-
-    VkPushConstantRange pc{};
-    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pc.offset     = 0;
-    pc.size       = sizeof(CullPushConstants);
-
-    VkPipelineLayoutCreateInfo pl{};
-    pl.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pl.setLayoutCount         = 1;
-    pl.pSetLayouts            = &computeDescriptorSetLayout;
-    pl.pushConstantRangeCount = 1;
-    pl.pPushConstantRanges    = &pc;
-    if (vkCreatePipelineLayout(device.getDevice(), &pl, nullptr, &computePipelineLayout) != VK_SUCCESS)
-        throw std::runtime_error("failed to create compute pipeline layout!");
-
-    auto code = readFile(spvPath);
-    VkShaderModule module = createShaderModule(device, code);
-
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = module;
-    stage.pName  = "main";
-
-    VkComputePipelineCreateInfo info{};
-    info.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    info.stage  = stage;
-    info.layout = computePipelineLayout;
-
-    if (vkCreateComputePipelines(device.getDevice(), VK_NULL_HANDLE, 1, &info, nullptr, &computePipeline) != VK_SUCCESS)
-        throw std::runtime_error("failed to create compute pipeline!");
-
-    vkDestroyShaderModule(device.getDevice(), module, nullptr);
-    std::cout << "Created Compute Pipeline\n";
+  std::cout << "Created Mesh Shader Pipeline\n";
 }
 
 void VulkanPipeline::destroy(const VulkanDevice& device)
@@ -230,18 +168,6 @@ void VulkanPipeline::destroy(const VulkanDevice& device)
   if (descriptorSetLayout) {
     vkDestroyDescriptorSetLayout(device.getDevice(), descriptorSetLayout, nullptr);
     descriptorSetLayout = VK_NULL_HANDLE;
-  }
-  if (computePipeline) {
-    vkDestroyPipeline(device.getDevice(), computePipeline, nullptr);
-    computePipeline = VK_NULL_HANDLE;
-  }
-  if (computePipelineLayout) {
-    vkDestroyPipelineLayout(device.getDevice(), computePipelineLayout, nullptr);
-    computePipelineLayout = VK_NULL_HANDLE;
-  }
-  if (computeDescriptorSetLayout) {
-    vkDestroyDescriptorSetLayout(device.getDevice(), computeDescriptorSetLayout, nullptr);
-    computeDescriptorSetLayout = VK_NULL_HANDLE;
   }
   std::cerr << "Graphics Pipeline Destroyed\n";
 }

@@ -8,7 +8,9 @@
 #include <vulkan/vulkan_core.h>
 #include <iostream>
 static const std::vector<const char*> kDeviceExtensions = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    VK_EXT_MESH_SHADER_EXTENSION_NAME,
+    VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME,
 };
 
 static const std::vector<const char*> kValidationLayers = {
@@ -158,15 +160,30 @@ void VulkanDevice::create(VulkanInstance& instance, VkSurfaceKHR surface)
       queueInfos.push_back(queueCreateInfo);
   }
   
-  VkPhysicalDeviceFeatures features{};
-  features.fillModeNonSolid = VK_TRUE;
+  VkPhysicalDeviceMaintenance4Features maintenance4{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES };
+  maintenance4.maintenance4 = VK_TRUE;
+
+  VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR baryFeatures{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR };
+  baryFeatures.fragmentShaderBarycentric = VK_TRUE;
+  baryFeatures.pNext = &maintenance4;
+
+  VkPhysicalDeviceMeshShaderFeaturesEXT meshFeatures{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT };
+  meshFeatures.meshShader = VK_TRUE;
+  meshFeatures.taskShader = VK_TRUE;
+  meshFeatures.pNext = &baryFeatures;
+
+  VkPhysicalDeviceFeatures2 features2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+  features2.features.fillModeNonSolid = VK_TRUE;
+  features2.pNext = &meshFeatures;
 
   VkDeviceCreateInfo deviceCreateInfo{};
   deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  deviceCreateInfo.queueCreateInfoCount= static_cast<uint32_t>(queueInfos.size());
-  deviceCreateInfo.pQueueCreateInfos = queueInfos.data();
-  deviceCreateInfo.pEnabledFeatures = &features;
-  deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(kDeviceExtensions.size());
+  deviceCreateInfo.queueCreateInfoCount    = static_cast<uint32_t>(queueInfos.size());
+  deviceCreateInfo.pQueueCreateInfos       = queueInfos.data();
+  deviceCreateInfo.pEnabledFeatures        = nullptr; // must be null when pNext has features2
+  deviceCreateInfo.pNext                   = &features2;
+  deviceCreateInfo.enabledExtensionCount   = static_cast<uint32_t>(kDeviceExtensions.size());
   deviceCreateInfo.ppEnabledExtensionNames = kDeviceExtensions.data();
 
   if (instance.validationEnabled()) 

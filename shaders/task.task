@@ -1,0 +1,143 @@
+#version 450
+#extension GL_EXT_mesh_shader : require
+
+layout(local_size_x = 32) in;
+
+const uint MAX_MESHLETS = 2048u;
+
+struct TaskPayload {
+    uint instanceIdx;
+    uint meshletIndices[MAX_MESHLETS];
+};
+taskPayloadSharedEXT TaskPayload payload;
+
+struct MeshletDesc {
+    uint  vertexOffset;
+    uint  triangleOffset;
+    uint  vertexCount;
+    uint  triangleCount;
+    vec3  center;
+    float radius;
+    vec3  coneAxis;
+    float coneCutoff;
+    int   groupId;
+    int   parentGroupId;
+    uint  lodLevel;
+    uint  _pad;
+};
+
+struct LodGroupData {
+    vec3  center;
+    float radius;
+    float error;
+    float _pad[3];
+};
+
+layout(set = 0, binding = 0) readonly buffer MeshletDescs  { MeshletDesc meshlets[]; };
+layout(set = 0, binding = 4) readonly buffer Instances     { mat4 instances[]; };
+layout(set = 0, binding = 5) readonly buffer LodGroups     { LodGroupData groups[]; };
+
+layout(push_constant) uniform PC {
+    mat4  vp;
+    vec3  meshCenter;
+    float meshRadius;
+    vec3  cameraPos;
+    uint  meshletCount;
+    uint  renderMode;
+    float cotHalfFovH;
+    float lodThreshold;
+    uint  forceLod;
+} pc;
+
+vec4 extractPlane(int axis, float sign) {
+    vec4 p;
+    for (int k = 0; k < 4; k++)
+        p[k] = pc.vp[k][3] + sign * pc.vp[k][axis];
+    return p / length(p.xyz);
+}
+
+bool sphereInFrustum(vec3 center, float radius) {
+    for (int i = 0; i < 3; i++) {
+        if (dot(extractPlane(i, -1.0).xyz, center) + extractPlane(i, -1.0).w < -radius) return false;
+        if (dot(extractPlane(i,  1.0).xyz, center) + extractPlane(i,  1.0).w < -radius) return false;
+    }
+    return true;
+}
+
+float screenSpaceError(vec3 worldCenter, float worldRadius, float worldError, float scale) {
+    float dist = max(length(worldCenter - pc.cameraPos) - worldRadius * scale, 0.001);
+    return worldError * scale * pc.cotHalfFovH / dist;
+}
+
+shared uint s_survivingCount;
+
+void main()
+{
+    if (gl_LocalInvocationID.x == 0u) s_survivingCount = 0u;
+    barrier();
+
+    uint instanceIdx = gl_WorkGroupID.x;
+    mat4 model       = instances[instanceIdx];
+
+    float scale = max(length(model[0].xyz), max(length(model[1].xyz), length(model[2].xyz)));
+
+    // instance-level frustum cull
+    vec3 worldCenter = vec3(model * vec4(pc.meshCenter, 1.0));
+    if (sphereInFrustum(worldCenter, pc.meshRadius)) {
+
+        for (uint m = gl_LocalInvocationID.x; m < pc.meshletCount; m += 32u) {
+            MeshletDesc ml = meshlets[m];
+
+            // LOD selection
+            bool lodOk;
+            if (pc.forceLod != 0u) {
+                lodOk = (ml.lodLevel == pc.forceLod - 1u);
+            } else {
+                // cluster_group: the group this meshlet belongs to.
+                //   error = what you'd get going one step coarser from this meshlet.
+                LodGroupData clusterGroup = groups[ml.groupId];
+                vec3  cCenter = vec3(model * vec4(clusterGroup.center, 1.0));
+                float cErr    = screenSpaceError(cCenter, clusterGroup.radius, clusterGroup.error, scale);
+
+                if (ml.parentGroupId < 0) {
+                    // Original geometry (finest level): render when going coarser would exceed budget.
+                    lodOk = (cErr > pc.lodThreshold);
+                } else {
+                    // refined_group: the finer group simplified to produce this meshlet.
+                    //   error = this meshlet's own accumulated simplification error.
+                    LodGroupData refinedGroup = groups[ml.parentGroupId];
+                    vec3  rCenter = vec3(model * vec4(refinedGroup.center, 1.0));
+                    float rErr    = screenSpaceError(rCenter, refinedGroup.radius, refinedGroup.error, scale);
+
+                    lodOk = (cErr > pc.lodThreshold) && (rErr <= pc.lodThreshold);
+                }
+            }
+
+            if (!lodOk) continue;
+
+            // Meshlet-level frustum cull
+            vec3  mlCenter = vec3(model * vec4(ml.center, 1.0));
+            float mlRadius = ml.radius * scale;
+            bool  visible  = sphereInFrustum(mlCenter, mlRadius);
+
+            // Backface cone cull
+            if (visible) {
+                vec3 worldAxis = normalize(mat3(model) * ml.coneAxis);
+                vec3 dir       = normalize(mlCenter - pc.cameraPos);
+                if (dot(worldAxis, dir) >= ml.coneCutoff)
+                    visible = false;
+            }
+
+            if (visible) {
+                uint idx = atomicAdd(s_survivingCount, 1u);
+                if (idx < MAX_MESHLETS)
+                    payload.meshletIndices[idx] = m;
+            }
+        }
+    }
+
+    barrier();
+
+    payload.instanceIdx = instanceIdx;
+    EmitMeshTasksEXT(min(s_survivingCount, MAX_MESHLETS), 1, 1);
+}

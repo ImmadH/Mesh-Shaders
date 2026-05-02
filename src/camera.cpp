@@ -2,7 +2,6 @@
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
-#include <array>
 #include <cmath>
 
 namespace Camera
@@ -10,7 +9,7 @@ namespace Camera
     static glm::vec3 position    = {0.0f, 0.05f, 0.5f};
     static float     yaw         = -90.0f;
     static float     pitch       = 0.0f;
-    static float     moveSpeed   = 0.5f;
+    static float     moveSpeed   = 1.5f;
     static float     sensitivity = 0.1f;
     static float     fov         = 60.0f;
     static float     nearPlane   = 0.01f;
@@ -56,6 +55,9 @@ namespace Camera
         pitch  = std::clamp(pitch, -89.0f, 89.0f);
     }
 
+    glm::vec3 getPosition() { return position; }
+    float     getFovY()     { return fov; }
+
     glm::mat4 getMVP(float aspect)
     {
         glm::mat4 view = glm::lookAt(position, position + forward(), glm::vec3{0, 1, 0});
@@ -63,27 +65,4 @@ namespace Camera
         proj[1][1] *= -1; // Vulkan Y flip
         return proj * view;
     }
-}
-
-void getFrustumPlanes(const glm::mat4& vp, glm::vec4 planes[6])
-{
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 2; ++j) {
-            float sign = j ? 1.f : -1.f;
-            for (int k = 0; k < 4; ++k)
-                planes[2 * i + j][k] = vp[k][3] + sign * vp[k][i];
-        }
-
-    for (int i = 0; i < 6; ++i)
-        planes[i] /= glm::length(glm::vec3(planes[i]));
-}
-
-bool isVisible(glm::vec4 planes[6], glm::vec3 center, float radius)
-{
-    // skip near(2,3), test left(0) right(1) top(4) bottom(5)
-    std::array<int, 4> idx{0, 1, 4, 5};
-    for (int i : idx)
-        if (glm::dot(center, glm::vec3(planes[i])) + planes[i].w + radius < 0)
-            return false;
-    return true;
 }

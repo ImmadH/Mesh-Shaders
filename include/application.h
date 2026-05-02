@@ -49,6 +49,12 @@ private:
   bool   mouseLocked    = false;
   bool   f2WasPressed   = false;
   bool   showProfiler   = false;
+  int    renderMode = 0;   // 0 = Solid, 1 = Clusters
+
+  struct DebugSettings {
+      float    lod_error_threshold = 1.0f;
+      uint32_t force_lod           = 0;      // 0 = Auto, N = force LOD level N-1
+  } debug_settings;
   double lastFrameTime = 0.0;
 
   std::vector<VkFramebuffer> swapChainFramebuffers;
@@ -64,16 +70,12 @@ private:
   VulkanRenderPass renderPass;
   VulkanPipeline   pipeline;
   MeshRegistry     registry;
-  InstanceBuffer   allInstances;     // all 10k model matrices, written once
-  InstanceBuffer   visibleInstances; // compute output, vertex shader reads this
-  IndirectBuffer   indirectDrawBuffer;
+  InstanceBuffer   allInstances;
   VulkanMesh       mesh;
   VulkanCommands   commands;
   VulkanSync       sync;
   ImGuiManager     imgui;
 
-  VkDescriptorPool descriptorPool        = VK_NULL_HANDLE;
-  VkDescriptorSet  descriptorSet         = VK_NULL_HANDLE;
-  VkDescriptorPool computeDescriptorPool = VK_NULL_HANDLE;
-  VkDescriptorSet  computeDescriptorSet  = VK_NULL_HANDLE;
+  VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+  VkDescriptorSet  descriptorSet  = VK_NULL_HANDLE;
 };
