@@ -1,7 +1,7 @@
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
 
-#include <meshoptimizer.h>  // must precede CLUSTERLOD_IMPLEMENTATION
+#include <meshoptimizer.h>  
 
 #define CLUSTERLOD_IMPLEMENTATION
 #include "../vendor/meshoptimizer/demo/clusterlod.h"
